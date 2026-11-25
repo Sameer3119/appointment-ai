@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Link } from "react-router-dom";
 import {
   CalendarDays,
@@ -38,6 +38,10 @@ export function AppointmentsPage() {
   const [activeTab, setActiveTab] = useState("upcoming"); // 'upcoming' | 'completed' | 'cancelled' | 'all'
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAppointment, setSelectedAppointment] = useState(null);
+
+  useEffect(() => {
+    fetchAppointments();
+  }, [fetchAppointments]);
 
   // Filter based on active tab & search
   const displayedAppointments = useMemo(() => {
@@ -93,7 +97,7 @@ export function AppointmentsPage() {
             icon={PhoneCall}
             className="font-bold shadow-xs cursor-pointer"
           >
-            Voice Assistant Demo
+            Voice Assistant
           </Button>
 
           <Link to="/doctors">

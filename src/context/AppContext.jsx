@@ -142,23 +142,20 @@ export function AppProvider({ children }) {
   }, []);
 
   // -------------------------------------------------------------------------
-  // Fetch Patient Appointments from SQLite Backend by Phone Number
+  // Fetch Appointments from SQLite Backend
   // -------------------------------------------------------------------------
   const fetchAppointments = useCallback(async (phoneOverride) => {
-    const targetPhone = phoneOverride || patient.phone;
-    if (!targetPhone) {
-      setAppointments([]);
-      setLoadingAppointments(false);
-      return [];
-    }
-
     setLoadingAppointments(true);
     setAppointmentsError(null);
     try {
-      const data = await appointmentsApi.getByPhone(targetPhone);
-      setAppointments(data);
+      const data = phoneOverride
+        ? await appointmentsApi.getByPhone(phoneOverride)
+        : await appointmentsApi.getAll();
+      // Sort newest/upcoming first without duplicating records
+      const sorted = [...data].sort((a, b) => (b.id || 0) - (a.id || 0));
+      setAppointments(sorted);
       setBackendConnected(true);
-      return data;
+      return sorted;
     } catch (err) {
       console.error("[MediVoice API] Failed to fetch appointments from backend:", err);
       setAppointmentsError(err.message || "Unable to load appointments from backend server.");
@@ -167,19 +164,13 @@ export function AppProvider({ children }) {
     } finally {
       setLoadingAppointments(false);
     }
-  }, [patient.phone]);
+  }, []);
 
   // Initial Data Load on Mount
   useEffect(() => {
     fetchDoctors();
-  }, [fetchDoctors]);
-
-  // Reload appointments whenever patient phone changes
-  useEffect(() => {
-    if (patient.phone) {
-      fetchAppointments(patient.phone);
-    }
-  }, [patient.phone, fetchAppointments]);
+    fetchAppointments();
+  }, [fetchDoctors, fetchAppointments]);
 
   // -------------------------------------------------------------------------
   // Book Appointment via Backend POST /appointments
@@ -228,7 +219,7 @@ export function AppProvider({ children }) {
       });
 
       // Refresh appointments from backend
-      await fetchAppointments(patient.phone);
+      await fetchAppointments();
 
       // Trigger confirmation modal
       setConfirmationData(createdApt);
@@ -253,7 +244,7 @@ export function AppProvider({ children }) {
       const updatedApt = await appointmentsApi.cancel(appointmentId);
 
       // Refresh appointments list from backend
-      await fetchAppointments(patient.phone);
+      await fetchAppointments();
 
       // Add cancellation notification
       setNotifications((prev) => [

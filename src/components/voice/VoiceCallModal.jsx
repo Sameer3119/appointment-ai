@@ -121,6 +121,7 @@ export function VoiceCallModal() {
           onBotStoppedSpeaking: () => {
             setIsBotSpeaking(false);
             currentBotMsgIdRef.current = null;
+            refreshClinicData();
           },
           onUserStartedSpeaking: () => {
             currentBotMsgIdRef.current = null;

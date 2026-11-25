@@ -105,7 +105,10 @@ export function normalizeAppointment(rawApt) {
     try {
       const dt = new Date(rawApt.appointment_date);
       if (!isNaN(dt.getTime())) {
-        dateStr = dt.toISOString().split("T")[0];
+        const year = dt.getFullYear();
+        const month = String(dt.getMonth() + 1).padStart(2, "0");
+        const day = String(dt.getDate()).padStart(2, "0");
+        dateStr = `${year}-${month}-${day}`;
         const hours = dt.getHours();
         const minutes = String(dt.getMinutes()).padStart(2, "0");
         timeStr = formatTime12h(`${String(hours).padStart(2, "0")}:${minutes}`);
