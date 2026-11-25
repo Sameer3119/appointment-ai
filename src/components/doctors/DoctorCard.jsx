@@ -1,10 +1,9 @@
 import React from "react";
-import { Star, Clock, Calendar, Stethoscope, GraduationCap, MapPin, Check } from "lucide-react";
+import { Star, Calendar, Stethoscope, GraduationCap, MapPin, Check, Clock } from "lucide-react";
 import { Button } from "../common/Button";
 
 export function DoctorCard({ doctor, onSelectDoctor, onQuickBookSlot }) {
-  const isAvailable = doctor.status.toLowerCase().includes("available");
-  const firstSlotGroup = doctor.availableSlots?.[0];
+  const isAvailable = Boolean(doctor.is_available ?? doctor.status?.toLowerCase().includes("available"));
 
   return (
     <div className="bg-white rounded-2xl border border-surface-border shadow-card hover:shadow-elevated hover:border-emerald-300 transition-all duration-200 p-5 flex flex-col justify-between group">
@@ -23,13 +22,13 @@ export function DoctorCard({ doctor, onSelectDoctor, onQuickBookSlot }) {
                 isAvailable ? "bg-emerald-500 animate-pulse" : "bg-charcoal-400"
               }`}
             />
-            {doctor.status}
+            {isAvailable ? "Available for Booking" : "Unavailable"}
           </span>
 
           <div className="flex items-center gap-1 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/60">
             <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-            <span className="text-xs font-bold text-charcoal-800">{doctor.rating}</span>
-            <span className="text-[10px] text-charcoal-400">({doctor.reviewsCount})</span>
+            <span className="text-xs font-bold text-charcoal-800">{doctor.rating || 4.9}</span>
+            <span className="text-[10px] text-charcoal-400">({doctor.reviewsCount || 120})</span>
           </div>
         </div>
 
@@ -47,23 +46,23 @@ export function DoctorCard({ doctor, onSelectDoctor, onQuickBookSlot }) {
             </h3>
             <p className="text-xs font-semibold text-emerald-700 flex items-center gap-1 mt-0.5">
               <Stethoscope className="w-3.5 h-3.5" />
-              {doctor.speciality} Specialist
+              {doctor.speciality || doctor.specialty} Specialist
             </p>
             <p className="text-[11px] text-charcoal-500 mt-1 flex items-center gap-1 line-clamp-1">
               <GraduationCap className="w-3 h-3 text-charcoal-400 shrink-0" />
-              {doctor.education}
+              {doctor.education || `Board Certified in ${doctor.specialty || "Medicine"}`}
             </p>
           </div>
         </div>
 
-        {/* Hospital & Experience */}
+        {/* Hospital & Contact */}
         <div className="mt-3 text-xs text-charcoal-500 flex items-center gap-2">
           <span className="flex items-center gap-1 truncate">
             <MapPin className="w-3.5 h-3.5 text-charcoal-400 shrink-0" />
-            {doctor.hospital}
+            {doctor.hospital || "MediVoice Medical Center"}
           </span>
           <span>•</span>
-          <span className="shrink-0 font-medium text-charcoal-700">{doctor.experience}</span>
+          <span className="shrink-0 font-medium text-charcoal-700">{doctor.experience || "10+ yrs exp"}</span>
         </div>
 
         {/* Consultation Fee */}
@@ -73,46 +72,29 @@ export function DoctorCard({ doctor, onSelectDoctor, onQuickBookSlot }) {
               Consultation Fee
             </span>
             <span className="text-lg font-extrabold text-charcoal-900 font-mono">
-              {doctor.currency}{doctor.consultationFee}
+              {doctor.currency || "$"}{doctor.consultationFee || 120}
             </span>
           </div>
 
           <span className="text-xs text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-medium">
-            Instant Confirmation
+            30-Min Consultation
           </span>
         </div>
 
-        {/* Available Slots Preview */}
+        {/* Available Schedule Info Banner */}
         <div className="mt-3.5 bg-[#FAFBF9] rounded-xl p-3 border border-charcoal-200/70">
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="font-semibold text-charcoal-700 flex items-center gap-1 text-[11px]">
+          <div className="flex items-center justify-between text-xs mb-1.5">
+            <span className="font-semibold text-charcoal-700 flex items-center gap-1.5 text-[11px]">
               <Calendar className="w-3.5 h-3.5 text-emerald-600" />
-              {firstSlotGroup?.label || "Open Slots"}
+              Working Hours
             </span>
-            <span className="text-[10px] text-charcoal-500 font-mono">
-              {firstSlotGroup?.times?.length || 0} slots
+            <span className="text-[10px] text-emerald-800 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200/60">
+              09:00 AM – 05:00 PM
             </span>
           </div>
-
-          {/* Quick slot chips */}
-          <div className="flex flex-wrap gap-1.5">
-            {firstSlotGroup?.times?.slice(0, 3).map((time) => (
-              <button
-                key={time}
-                type="button"
-                onClick={() => onQuickBookSlot(doctor, firstSlotGroup.date, time)}
-                className="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-700 hover:text-white text-charcoal-800 text-[11px] font-semibold border border-charcoal-200 hover:border-emerald-700 shadow-2xs transition-all cursor-pointer"
-              >
-                {time}
-              </button>
-            ))}
-
-            {(firstSlotGroup?.times?.length || 0) > 3 && (
-              <span className="px-2 py-1 rounded-lg bg-charcoal-100 text-charcoal-600 text-[10px] font-medium">
-                +{(firstSlotGroup?.times?.length || 0) - 3} more
-              </span>
-            )}
-          </div>
+          <p className="text-[11px] text-charcoal-500 leading-relaxed">
+            Real-time appointment slots available daily in 30-minute intervals.
+          </p>
         </div>
       </div>
 
@@ -122,9 +104,10 @@ export function DoctorCard({ doctor, onSelectDoctor, onQuickBookSlot }) {
           variant="primary"
           size="sm"
           onClick={() => onSelectDoctor(doctor)}
+          disabled={!isAvailable}
           className="w-full py-2 text-xs font-bold cursor-pointer"
         >
-          Select Date & Book Slot
+          {isAvailable ? "Select Date & Book Slot" : "Currently Unavailable"}
         </Button>
       </div>
     </div>

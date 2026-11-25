@@ -28,25 +28,10 @@ export function HomePage() {
     doctors,
     recentlyViewedDoctors,
     openCallModal,
-    addAppointment,
   } = useApp();
 
   const [selectedDoctor, setSelectedDoctor] = useState(null);
   const [selectedAppointment, setSelectedAppointment] = useState(null);
-
-  const handleQuickBookSlot = (doctor, date, time) => {
-    addAppointment({
-      doctorId: doctor.id,
-      doctorName: doctor.name,
-      doctorAvatar: doctor.avatar,
-      speciality: doctor.speciality,
-      appointmentDate: date,
-      appointmentTime: time,
-      consultationFee: doctor.consultationFee,
-      bookedVia: "Find Doctors",
-      reason: `Direct consultation with ${doctor.name}`,
-    });
-  };
 
   return (
     <div className="space-y-7">
@@ -68,7 +53,7 @@ export function HomePage() {
             </h1>
 
             <p className="text-xs sm:text-sm text-emerald-100/90 leading-relaxed max-w-lg">
-              Skip typing and waiting. Talk directly with MediVoice AI to check specialist schedules, book consultation slots, or manage your upcoming visits in real time.
+              Welcome back, <strong className="text-white">{patient.name}</strong>. Check specialist schedules, book 30-minute consultation slots, or manage your upcoming visits with persistent clinic records.
             </p>
 
             <div className="pt-2 flex flex-wrap items-center gap-3">
@@ -79,7 +64,7 @@ export function HomePage() {
                 icon={PhoneCall}
                 className="bg-white hover:bg-emerald-50 text-emerald-950 font-bold border-0 shadow-lg hover:shadow-xl hover:scale-102 transition-all cursor-pointer"
               >
-                Talk to MediVoice AI
+                Voice Assistant Demo
               </Button>
 
               <Link to="/doctors">
@@ -103,12 +88,12 @@ export function HomePage() {
               <div className="w-12 h-12 rounded-full bg-emerald-500/90 text-white flex items-center justify-center mx-auto mb-3 shadow-glow-green group-hover:scale-105 transition-transform">
                 <Bot className="w-6 h-6" />
               </div>
-              <h4 className="text-sm font-bold text-white">Call Clinical AI</h4>
+              <h4 className="text-sm font-bold text-white">Call Clinical AI (Demo)</h4>
               <p className="text-[11px] text-emerald-200 mt-0.5">
-                "Book cardiologist tomorrow at 10 AM"
+                "Check cardiologist slots for tomorrow"
               </p>
               <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-emerald-300 font-semibold group-hover:text-white">
-                <span>Start conversation</span>
+                <span>Start preview call</span>
                 <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
@@ -131,23 +116,20 @@ export function HomePage() {
       {/* Browse Specialities */}
       <SpecialityBrowser />
 
-      {/* Recently Viewed / Top Doctors */}
+      {/* Verified Doctors from SQLite Backend */}
       <RecentlyViewedDoctors
         doctors={recentlyViewedDoctors.length ? recentlyViewedDoctors : doctors.slice(0, 3)}
         onSelectDoctor={(doc) => setSelectedDoctor(doc)}
-        onQuickBookSlot={handleQuickBookSlot}
       />
 
-      {/* Simple Booking Call-to-action Banner */}
-      <BookingCtaBanner onTalkToAI={openCallModal} />
-
-      {/* Reusable Modals */}
+      {/* Full Schedule & Slot Picker Modal */}
       <DoctorSlotModal
         doctor={selectedDoctor}
         isOpen={Boolean(selectedDoctor)}
         onClose={() => setSelectedDoctor(null)}
       />
 
+      {/* Appointment Details & Cancellation Modal */}
       <AppointmentDetailsModal
         appointment={selectedAppointment}
         isOpen={Boolean(selectedAppointment)}

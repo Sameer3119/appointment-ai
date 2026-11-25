@@ -10,6 +10,10 @@ import {
   CheckCircle2,
   Clock,
   XCircle,
+  Loader2,
+  AlertTriangle,
+  RefreshCw,
+  Phone,
 } from "lucide-react";
 import { PatientAppointmentCard } from "../components/appointments/PatientAppointmentCard";
 import { AppointmentDetailsModal } from "../components/appointments/AppointmentDetailsModal";
@@ -18,6 +22,11 @@ import { useApp } from "../context/AppContext";
 
 export function AppointmentsPage() {
   const {
+    patient,
+    appointments,
+    loadingAppointments,
+    appointmentsError,
+    fetchAppointments,
     upcomingAppointments,
     completedAppointments,
     cancelledAppointments,
@@ -40,22 +49,22 @@ export function AppointmentsPage() {
     } else if (activeTab === "cancelled") {
       list = cancelledAppointments;
     } else {
-      list = [...upcomingAppointments, ...completedAppointments, ...cancelledAppointments];
+      list = appointments;
     }
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       list = list.filter(
         (apt) =>
-          apt.doctorName.toLowerCase().includes(q) ||
-          apt.speciality.toLowerCase().includes(q) ||
-          apt.appointmentDate.includes(q) ||
+          (apt.doctorName || "").toLowerCase().includes(q) ||
+          (apt.speciality || "").toLowerCase().includes(q) ||
+          (apt.appointmentDate || "").includes(q) ||
           (apt.reason && apt.reason.toLowerCase().includes(q))
       );
     }
 
     return list;
-  }, [activeTab, searchQuery, upcomingAppointments, completedAppointments, cancelledAppointments]);
+  }, [activeTab, searchQuery, upcomingAppointments, completedAppointments, cancelledAppointments, appointments]);
 
   return (
     <div className="space-y-6">
@@ -65,9 +74,15 @@ export function AppointmentsPage() {
           <h2 className="text-xl sm:text-2xl font-extrabold text-charcoal-900 tracking-tight">
             My Appointments
           </h2>
-          <p className="text-xs sm:text-sm text-charcoal-500 mt-0.5">
-            Manage your doctor consultations, view upcoming schedules and consultation history.
-          </p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <p className="text-xs sm:text-sm text-charcoal-500">
+              Manage your doctor consultations linked to your patient phone number.
+            </p>
+            <span className="inline-flex items-center gap-1 text-[11px] font-mono font-semibold bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md border border-emerald-200/80">
+              <Phone className="w-3 h-3 text-emerald-600" />
+              {patient.phone}
+            </span>
+          </div>
         </div>
 
         <div className="flex items-center gap-2.5">
@@ -78,7 +93,7 @@ export function AppointmentsPage() {
             icon={PhoneCall}
             className="font-bold shadow-xs cursor-pointer"
           >
-            Talk to MediVoice AI
+            Voice Assistant Demo
           </Button>
 
           <Link to="/doctors">
@@ -160,7 +175,7 @@ export function AppointmentsPage() {
                   : "bg-charcoal-50 text-charcoal-700 hover:bg-charcoal-100"
               }`}
             >
-              <span>All Visits</span>
+              <span>All ({appointments.length})</span>
             </button>
           </div>
 
@@ -178,48 +193,77 @@ export function AppointmentsPage() {
         </div>
       </div>
 
-      {/* Appointments List / Grid */}
-      {displayedAppointments.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-surface-border p-12 text-center">
-          <Calendar className="w-8 h-8 text-charcoal-300 mx-auto mb-2" />
-          <h4 className="text-base font-bold text-charcoal-900">
-            No {activeTab !== "all" ? activeTab : ""} appointments found
-          </h4>
-          <p className="text-xs text-charcoal-500 max-w-sm mx-auto mt-1">
-            {activeTab === "upcoming"
-              ? "You don't have any upcoming doctor appointments scheduled. Talk to MediVoice AI or choose a doctor to book."
-              : "No records found matching this category or filter."}
-          </p>
+      {/* Loading State */}
+      {loadingAppointments && (
+        <div className="bg-white rounded-2xl border border-surface-border p-12 text-center shadow-card">
+          <Loader2 className="w-8 h-8 text-emerald-600 animate-spin mx-auto mb-3" />
+          <h4 className="text-sm font-bold text-charcoal-800">Loading Appointments from Database...</h4>
+          <p className="text-xs text-charcoal-500 mt-1">Retrieving bookings for patient {patient.phone}.</p>
+        </div>
+      )}
 
-          <div className="mt-4 flex items-center justify-center gap-2.5">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={openCallModal}
-              icon={PhoneCall}
-            >
-              Talk to MediVoice AI
-            </Button>
-            <Link to="/doctors">
-              <Button variant="secondary" size="sm">
-                Find Doctors
-              </Button>
-            </Link>
+      {/* Error State */}
+      {!loadingAppointments && appointmentsError && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center space-y-3">
+          <AlertTriangle className="w-8 h-8 text-rose-600 mx-auto" />
+          <div>
+            <h4 className="text-sm font-bold text-rose-900">Failed to Load Appointments</h4>
+            <p className="text-xs text-rose-700 max-w-md mx-auto mt-1">{appointmentsError}</p>
           </div>
+          <button
+            type="button"
+            onClick={() => fetchAppointments()}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retry
+          </button>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {displayedAppointments.map((apt) => (
-            <PatientAppointmentCard
-              key={apt.id}
-              appointment={apt}
-              isNewlyBooked={apt.id === newlyBookedId || apt.isNewlyCreated}
-              onViewDetails={(appointment) => setSelectedAppointment(appointment)}
-              onCancelAppointment={(appointment) => setSelectedAppointment(appointment)}
-              onTalkToAI={openCallModal}
-            />
-          ))}
-        </div>
+      )}
+
+      {/* Appointments List / Grid */}
+      {!loadingAppointments && !appointmentsError && (
+        <>
+          {displayedAppointments.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-surface-border p-12 text-center shadow-card">
+              <Calendar className="w-8 h-8 text-charcoal-300 mx-auto mb-2" />
+              <h4 className="text-base font-bold text-charcoal-900">
+                No {activeTab !== "all" ? activeTab : ""} appointments found
+              </h4>
+              <p className="text-xs text-charcoal-500 max-w-sm mx-auto mt-1">
+                {activeTab === "upcoming"
+                  ? `No upcoming appointments found for ${patient.phone}. You can book an appointment with any verified doctor.`
+                  : `No ${activeTab} appointments recorded for ${patient.phone}.`}
+              </p>
+
+              <div className="mt-4 flex items-center justify-center gap-2.5">
+                <Link to="/doctors">
+                  <Button variant="primary" size="sm" icon={Plus}>
+                    Browse Doctors & Book
+                  </Button>
+                </Link>
+                <Link to="/settings">
+                  <Button variant="secondary" size="sm">
+                    Switch Patient Phone
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {displayedAppointments.map((apt) => (
+                <PatientAppointmentCard
+                  key={apt.id}
+                  appointment={apt}
+                  isNewlyBooked={apt.id === newlyBookedId}
+                  onViewDetails={(appointment) => setSelectedAppointment(appointment)}
+                  onCancelAppointment={(appointment) => setSelectedAppointment(appointment)}
+                  onTalkToAI={openCallModal}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {/* Appointment Details & Cancellation Modal */}

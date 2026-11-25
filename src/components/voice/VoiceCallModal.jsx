@@ -1,84 +1,237 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Link } from "react-router-dom";
 import {
+  PhoneCall,
   PhoneOff,
   Mic,
   MicOff,
   Volume2,
-  VolumeX,
   Bot,
-  RotateCcw,
-  CheckCircle2,
-  Calendar,
-  Clock,
-  User,
-  ShieldCheck,
-  ChevronRight,
-  Sparkles,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react";
+import { PipecatClient } from "@pipecat-ai/client-js";
+import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { Modal } from "../common/Modal";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { LiveTranscript } from "./LiveTranscript";
 import { useApp } from "../../context/AppContext";
-import {
-  VOICE_BOOKING_SCRIPT,
-  VOICE_CANCELLATION_SCRIPT,
-  VOICE_AVAILABILITY_SCRIPT,
-} from "../../services/mockData";
+import { API_BASE_URL } from "../../services/api";
 
 export function VoiceCallModal() {
   const {
     isCallModalOpen,
     closeCallModal,
-    addAppointment,
-    cancelAppointmentByDoctor,
-    voiceCallScenario,
-    setVoiceCallScenario,
-    patient,
+    fetchAppointments,
+    fetchDoctors,
+    addToast,
   } = useApp();
 
-  // Call status: 'connecting' | 'connected' | 'ended'
-  const [callStatus, setCallStatus] = useState("connecting");
+  // Real WebRTC call state: 'disconnected' | 'connecting' | 'connected' | 'error'
+  const [callStatus, setCallStatus] = useState("disconnected");
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  const [isBotSpeaking, setIsBotSpeaking] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(null);
 
-  // Transcript dialogue state
+  // Real transcripts from Pipecat events
   const [transcriptMessages, setTranscriptMessages] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isAutoPlaying, setIsAutoPlaying] = useState(true);
+  const [interimUserText, setInterimUserText] = useState("");
 
+  const clientRef = useRef(null);
+  const audioRef = useRef(null);
   const timerRef = useRef(null);
-  const timeoutRef = useRef(null);
+  const isConnectingRef = useRef(false);
+  const currentBotMsgIdRef = useRef(null);
 
-  // Pick script based on active scenario
-  const getActiveScript = (scenario) => {
-    switch (scenario) {
-      case "cancellation":
-        return VOICE_CANCELLATION_SCRIPT;
-      case "availability":
-        return VOICE_AVAILABILITY_SCRIPT;
-      case "booking":
-      default:
-        return VOICE_BOOKING_SCRIPT;
+  const cleanupCallResources = useCallback(async () => {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+    isConnectingRef.current = false;
+    setIsBotSpeaking(false);
+    setInterimUserText("");
+    currentBotMsgIdRef.current = null;
+
+    if (audioRef.current) {
+      audioRef.current.srcObject = null;
     }
+
+    const client = clientRef.current;
+    clientRef.current = null;
+    if (client) {
+      try {
+        await client.disconnect();
+      } catch (err) {
+        console.warn("[MediVoice WebRTC] Disconnect cleanup warning:", err);
+      }
+    }
+  }, []);
+
+  // Refresh SQLite-backed appointments & doctors after a call
+  const refreshClinicData = useCallback(async () => {
+    await Promise.all([fetchAppointments(), fetchDoctors()]);
+  }, [fetchAppointments, fetchDoctors]);
+
+  const startCall = useCallback(async () => {
+    // Prevent multiple simultaneous connections from this browser session
+    if (isConnectingRef.current || clientRef.current) {
+      return;
+    }
+
+    isConnectingRef.current = true;
+    setErrorMessage(null);
+    setCallStatus("connecting");
+    setCallDuration(0);
+    setTranscriptMessages([]);
+    setInterimUserText("");
+    setIsMuted(false);
+    setIsBotSpeaking(false);
+    currentBotMsgIdRef.current = null;
+
+    try {
+      const transport = new SmallWebRTCTransport({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+
+      const client = new PipecatClient({
+        transport,
+        enableMic: true,
+        enableCam: false,
+        callbacks: {
+          onConnected: () => {
+            isConnectingRef.current = false;
+            setCallStatus("connected");
+            setErrorMessage(null);
+          },
+          onDisconnected: () => {
+            isConnectingRef.current = false;
+            setCallStatus("disconnected");
+            setIsBotSpeaking(false);
+            setInterimUserText("");
+            currentBotMsgIdRef.current = null;
+            if (audioRef.current) {
+              audioRef.current.srcObject = null;
+            }
+            clientRef.current = null;
+            refreshClinicData();
+          },
+          onBotStartedSpeaking: () => {
+            setIsBotSpeaking(true);
+          },
+          onBotStoppedSpeaking: () => {
+            setIsBotSpeaking(false);
+            currentBotMsgIdRef.current = null;
+          },
+          onUserStartedSpeaking: () => {
+            currentBotMsgIdRef.current = null;
+          },
+          onUserTranscript: (data) => {
+            const text = data?.text?.trim();
+            if (!text) return;
+            if (data.final) {
+              setInterimUserText("");
+              setTranscriptMessages((prev) => [
+                ...prev,
+                {
+                  id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  sender: "user",
+                  text,
+                },
+              ]);
+            } else {
+              setInterimUserText(text);
+            }
+          },
+          onBotTranscript: (data) => {
+            const chunk = data?.text;
+            if (!chunk) return;
+            setTranscriptMessages((prev) => {
+              const activeId = currentBotMsgIdRef.current;
+              if (activeId) {
+                return prev.map((msg) =>
+                  msg.id === activeId ? { ...msg, text: `${msg.text}${chunk}` } : msg
+                );
+              }
+              const newId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              currentBotMsgIdRef.current = newId;
+              return [...prev, { id: newId, sender: "ai", text: chunk }];
+            });
+          },
+          onTrackStarted: (track, participant) => {
+            if (track?.kind === "audio" && !participant?.local && audioRef.current) {
+              const stream = new MediaStream([track]);
+              audioRef.current.srcObject = stream;
+              audioRef.current.play().catch((playErr) => {
+                console.warn("[MediVoice WebRTC] Audio autoplay blocked:", playErr);
+              });
+            }
+          },
+          onTrackStopped: (track, participant) => {
+            if (track?.kind === "audio" && !participant?.local && audioRef.current) {
+              audioRef.current.srcObject = null;
+            }
+          },
+          onError: (errMsg) => {
+            const detail =
+              errMsg?.data?.error ||
+              errMsg?.message ||
+              "Voice pipeline reported an error.";
+            setErrorMessage(detail);
+            setCallStatus("error");
+            isConnectingRef.current = false;
+          },
+        },
+      });
+
+      clientRef.current = client;
+
+      await client.connect({
+        webrtcRequestParams: {
+          endpoint: `${API_BASE_URL}/voice/offer`,
+        },
+      });
+    } catch (err) {
+      await cleanupCallResources();
+      let friendly = err?.message || "Failed to connect to MediVoice AI.";
+      if (
+        err?.name === "NotAllowedError" ||
+        err?.name === "PermissionDeniedError" ||
+        /permission/i.test(friendly)
+      ) {
+        friendly =
+          "Microphone access was denied. Please allow microphone permissions in your browser and try again.";
+      }
+      setErrorMessage(friendly);
+      setCallStatus("error");
+      addToast({
+        title: "Voice Call Connection Failed",
+        message: friendly,
+        type: "error",
+      });
+    }
+  }, [addToast, cleanupCallResources, refreshClinicData]);
+
+  const endCall = useCallback(async () => {
+    await cleanupCallResources();
+    setCallStatus("disconnected");
+    await refreshClinicData();
+  }, [cleanupCallResources, refreshClinicData]);
+
+  const handleCloseModal = useCallback(async () => {
+    await cleanupCallResources();
+    setCallStatus("disconnected");
+    closeCallModal();
+    await refreshClinicData();
+  }, [cleanupCallResources, closeCallModal, refreshClinicData]);
+
+  const toggleMute = () => {
+    if (!clientRef.current || callStatus !== "connected") return;
+    const nextMuted = !isMuted;
+    clientRef.current.enableMic(!nextMuted);
+    setIsMuted(nextMuted);
   };
 
-  const currentScript = getActiveScript(voiceCallScenario);
-
-  // Reset and start call when modal opens or scenario changes
-  useEffect(() => {
-    if (isCallModalOpen) {
-      startNewCall(voiceCallScenario);
-    } else {
-      stopCall();
-    }
-    return () => {
-      clearInterval(timerRef.current);
-      clearTimeout(timeoutRef.current);
-    };
-  }, [isCallModalOpen, voiceCallScenario]);
-
-  // Duration Timer
+  // Duration timer while connected
   useEffect(() => {
     if (callStatus === "connected") {
       timerRef.current = setInterval(() => {
@@ -90,254 +243,186 @@ export function VoiceCallModal() {
     return () => clearInterval(timerRef.current);
   }, [callStatus]);
 
-  // Dialogue simulation progression
+  // Ensure cleanup on unmount or when modal closes externally
   useEffect(() => {
-    if (callStatus === "connected" && isAutoPlaying && currentIndex < currentScript.length) {
-      const step = currentScript[currentIndex];
-      timeoutRef.current = setTimeout(() => {
-        setTranscriptMessages((prev) => [...prev, step]);
-        setCurrentIndex((i) => i + 1);
-
-        // Check if this step completed a booking
-        if (step.isCompletedBooking && step.bookingDetails) {
-          setTimeout(() => {
-            addAppointment({
-              ...step.bookingDetails,
-              patientName: patient.name,
-              bookedVia: "Talk to MediVoice AI",
-            });
-          }, 800);
-        }
-
-        // Check if this step completed a cancellation
-        if (step.isCompletedCancellation && step.targetDoctorName) {
-          setTimeout(() => {
-            cancelAppointmentByDoctor(step.targetDoctorName);
-          }, 800);
-        }
-      }, step.delayMs || 1600);
-    } else if (currentIndex >= currentScript.length && callStatus === "connected") {
-      timeoutRef.current = setTimeout(() => {
-        setCallStatus("ended");
-      }, 3000);
+    if (!isCallModalOpen && clientRef.current) {
+      cleanupCallResources();
+      setCallStatus("disconnected");
     }
-    return () => clearTimeout(timeoutRef.current);
-  }, [callStatus, currentIndex, isAutoPlaying, currentScript, patient]);
+  }, [isCallModalOpen, cleanupCallResources]);
 
-  const startNewCall = (scenario = voiceCallScenario) => {
-    clearTimeout(timeoutRef.current);
-    clearInterval(timerRef.current);
-    setCallStatus("connecting");
-    setCallDuration(0);
-    setTranscriptMessages([]);
-    setCurrentIndex(0);
-    setIsAutoPlaying(true);
-    setIsMuted(false);
+  useEffect(() => {
+    return () => {
+      cleanupCallResources();
+    };
+  }, [cleanupCallResources]);
 
-    // Simulate connection delay
-    setTimeout(() => {
-      setCallStatus("connected");
-    }, 1200);
-  };
-
-  const stopCall = () => {
-    clearTimeout(timeoutRef.current);
-    clearInterval(timerRef.current);
-    setCallStatus("ended");
-  };
-
-  const handleEndCall = () => {
-    stopCall();
-  };
-
-  // Format seconds to mm:ss
-  const formatTime = (seconds) => {
+  const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
-  const currentSpeaker =
-    transcriptMessages.length > 0
-      ? transcriptMessages[transcriptMessages.length - 1].sender
-      : "ai";
+  const isCallActive = callStatus === "connecting" || callStatus === "connected";
 
   return (
-    <Modal
-      isOpen={isCallModalOpen}
-      onClose={closeCallModal}
-      maxWidth="max-w-md"
-      className="p-0 border-0 bg-transparent shadow-none"
-    >
-      {/* Phone-style Shell */}
-      <div className="bg-charcoal-950 text-white rounded-[32px] border-4 border-charcoal-800 shadow-modal overflow-hidden flex flex-col relative">
-        {/* Phone Top Notch / Speaker Bar */}
-        <div className="pt-3 pb-2 flex justify-center items-center relative">
-          <div className="w-20 h-4 bg-charcoal-900 rounded-full flex items-center justify-center gap-2 px-2">
-            <span className="w-2 h-2 rounded-full bg-charcoal-700" />
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/80" />
-          </div>
-        </div>
+    <Modal isOpen={isCallModalOpen} onClose={handleCloseModal} maxWidth="max-w-2xl">
+      <div className="space-y-4">
+        {/* Hidden remote WebRTC audio output element */}
+        <audio ref={audioRef} autoPlay playsInline className="hidden" />
 
-        {/* Call Header */}
-        <div className="px-6 pt-2 pb-3 text-center space-y-1">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-charcoal-900 border border-charcoal-800 text-[11px] font-semibold text-emerald-400">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            MediVoice AI • Clinical Voice Assistant
-          </div>
-
-          <h3 className="text-xl font-bold tracking-tight text-white pt-1">
-            Talk to MediVoice AI
-          </h3>
-
-          {/* Call Status & Timer */}
-          <div className="flex items-center justify-center gap-2 text-xs">
-            {callStatus === "connecting" && (
-              <span className="text-amber-400 flex items-center gap-1 font-medium animate-pulse">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
-                Connecting your call...
-              </span>
-            )}
-            {callStatus === "connected" && (
-              <span className="text-emerald-400 flex items-center gap-1.5 font-medium">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                Connected • <span className="font-mono text-white">{formatTime(callDuration)}</span>
-              </span>
-            )}
-            {callStatus === "ended" && (
-              <span className="text-charcoal-400 flex items-center gap-1 font-medium">
-                <span className="w-2 h-2 rounded-full bg-charcoal-500" />
-                Call Finished ({formatTime(callDuration)})
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Scenario Switcher Tabs */}
-        <div className="px-5 pb-2">
-          <div className="grid grid-cols-3 gap-1.5 p-1 bg-charcoal-900 rounded-xl text-[10px] font-semibold">
-            <button
-              type="button"
-              onClick={() => {
-                setVoiceCallScenario("booking");
-                startNewCall("booking");
-              }}
-              className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer ${
-                voiceCallScenario === "booking"
-                  ? "bg-emerald-600 text-white shadow-xs"
-                  : "text-charcoal-400 hover:text-white"
-              }`}
-            >
-              1. Book Doctor
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setVoiceCallScenario("availability");
-                startNewCall("availability");
-              }}
-              className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer ${
-                voiceCallScenario === "availability"
-                  ? "bg-emerald-600 text-white shadow-xs"
-                  : "text-charcoal-400 hover:text-white"
-              }`}
-            >
-              2. Check Slots
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setVoiceCallScenario("cancellation");
-                startNewCall("cancellation");
-              }}
-              className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer ${
-                voiceCallScenario === "cancellation"
-                  ? "bg-emerald-600 text-white shadow-xs"
-                  : "text-charcoal-400 hover:text-white"
-              }`}
-            >
-              3. Cancel Visit
-            </button>
-          </div>
-        </div>
-
-        {/* Central Audio Visualizer & Avatar Area */}
-        <div className="px-6 py-1 bg-gradient-to-b from-charcoal-950 via-charcoal-900 to-charcoal-950 flex flex-col items-center">
-          {/* Pulsing AI Circle */}
-          <div className="relative my-2">
-            {callStatus === "connected" && !isMuted && (
-              <span className="absolute inset-0 rounded-full bg-emerald-500/20 animate-ping duration-1000" />
-            )}
-            <div className="w-18 h-18 rounded-full bg-gradient-to-br from-emerald-600 to-emerald-800 flex items-center justify-center border-2 border-emerald-400/40 shadow-glow-green relative z-10">
-              <Bot className="w-8 h-8 text-white" />
+        {/* Top Calling Header */}
+        <div className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-teal-900 text-white rounded-2xl p-5 shadow-call relative overflow-hidden">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-emerald-300">
+                <Bot className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-white">MediVoice Clinical AI</h3>
+                  <span
+                    className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border ${
+                      callStatus === "connected"
+                        ? "bg-emerald-400/20 text-emerald-200 border-emerald-400/40"
+                        : callStatus === "error"
+                        ? "bg-rose-400/20 text-rose-200 border-rose-400/40"
+                        : "bg-white/10 text-emerald-100 border-white/20"
+                    }`}
+                  >
+                    {callStatus === "connected"
+                      ? "Live WebRTC"
+                      : callStatus === "connecting"
+                      ? "Connecting"
+                      : callStatus === "error"
+                      ? "Error"
+                      : "Disconnected"}
+                  </span>
+                </div>
+                <p className="text-xs text-emerald-100/80 mt-0.5 flex items-center gap-2 font-mono">
+                  {callStatus === "connecting" && (
+                    <span className="inline-flex items-center gap-1.5 text-amber-300">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                      Negotiating WebRTC Audio...
+                    </span>
+                  )}
+                  {callStatus === "connected" && (
+                    <span className="inline-flex items-center gap-1.5 text-emerald-300">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      Connected • {formatDuration(callDuration)}
+                    </span>
+                  )}
+                  {callStatus === "disconnected" && (
+                    <span className="text-emerald-100/75">
+                      Ready to start a real-time voice call
+                    </span>
+                  )}
+                  {callStatus === "error" && (
+                    <span className="text-rose-200">Connection failed</span>
+                  )}
+                </p>
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={refreshClinicData}
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-emerald-100 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Refresh appointments from database"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Sync</span>
+            </button>
           </div>
 
-          {/* Real-time sound wave bars */}
-          <AudioVisualizer
-            isActive={callStatus === "connected"}
-            isSpeaking={currentSpeaker === "ai"}
-            isMuted={isMuted}
+          {/* Audio Wave Visualizer */}
+          <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs text-emerald-200">
+              <Volume2 className="w-4 h-4 text-emerald-400" />
+              <span>
+                {callStatus === "connected"
+                  ? "Real-Time SmallWebRTC Audio Active"
+                  : "Microphone & Speaker Standby"}
+              </span>
+            </div>
+            <AudioVisualizer
+              isActive={callStatus === "connected"}
+              isSpeaking={isBotSpeaking}
+              isMuted={isMuted}
+            />
+          </div>
+        </div>
+
+        {/* Error Banner */}
+        {errorMessage && (
+          <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-start gap-2.5 text-xs text-rose-900">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <div className="leading-relaxed">{errorMessage}</div>
+          </div>
+        )}
+
+        {/* Live Transcript Box */}
+        <div className="bg-[#FAFBF9] border border-charcoal-200/80 rounded-2xl p-4 min-h-[220px] max-h-[300px] overflow-y-auto">
+          <LiveTranscript
+            messages={transcriptMessages}
+            interimUserText={interimUserText}
+            callStatus={callStatus}
           />
         </div>
 
-        {/* Live Transcript Stream in light container */}
-        <div className="px-5 py-3 bg-white text-charcoal-900">
-          <LiveTranscript messages={transcriptMessages} />
-        </div>
-
-        {/* Phone Action Controls Footer */}
-        <div className="p-5 bg-charcoal-950 border-t border-charcoal-900 flex items-center justify-around">
-          {/* Mute Toggle */}
-          <button
-            type="button"
-            onClick={() => setIsMuted(!isMuted)}
-            className={`w-12 h-12 rounded-full flex flex-col items-center justify-center transition-all cursor-pointer ${
-              isMuted
-                ? "bg-rose-500 text-white"
-                : "bg-charcoal-800 text-charcoal-300 hover:bg-charcoal-700 hover:text-white"
-            }`}
-            title={isMuted ? "Unmute" : "Mute"}
-          >
-            {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-          </button>
-
-          {/* End Call / Replay Button */}
-          {callStatus === "ended" ? (
+        {/* Footer Call Action Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => startNewCall(voiceCallScenario)}
-              className="w-14 h-14 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-lg transition-transform active:scale-95 cursor-pointer"
-              title="Restart Call Simulation"
+              onClick={toggleMute}
+              disabled={callStatus !== "connected"}
+              className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                callStatus !== "connected"
+                  ? "opacity-50 cursor-not-allowed bg-charcoal-50 border-charcoal-200 text-charcoal-400"
+                  : isMuted
+                  ? "bg-rose-50 border-rose-300 text-rose-700 cursor-pointer"
+                  : "bg-white border-charcoal-200 text-charcoal-700 hover:bg-charcoal-50 cursor-pointer"
+              }`}
             >
-              <RotateCcw className="w-6 h-6" />
+              {isMuted ? (
+                <MicOff className="w-4 h-4" />
+              ) : (
+                <Mic className="w-4 h-4 text-emerald-700" />
+              )}
+              <span>{isMuted ? "Unmute" : "Mute"}</span>
             </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleEndCall}
-              className="w-14 h-14 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-lg transition-transform active:scale-95 cursor-pointer"
-              title="End Call"
-            >
-              <PhoneOff className="w-6 h-6" />
-            </button>
-          )}
+          </div>
 
-          {/* Speaker Toggle */}
-          <button
-            type="button"
-            onClick={() => setIsSpeakerOn(!isSpeakerOn)}
-            className={`w-12 h-12 rounded-full flex flex-col items-center justify-center transition-all cursor-pointer ${
-              !isSpeakerOn
-                ? "bg-charcoal-800 text-charcoal-500"
-                : "bg-charcoal-800 text-charcoal-200 hover:bg-charcoal-700 hover:text-white"
-            }`}
-            title={isSpeakerOn ? "Speaker Off" : "Speaker On"}
-          >
-            {isSpeakerOn ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/appointments"
+              onClick={handleCloseModal}
+              className="px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold rounded-xl border border-emerald-200 transition-colors"
+            >
+              View Appointments
+            </Link>
+
+            {!isCallActive ? (
+              <button
+                type="button"
+                onClick={startCall}
+                className="px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+              >
+                <PhoneCall className="w-4 h-4" />
+                <span>Start Call</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={endCall}
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+              >
+                <PhoneOff className="w-4 h-4" />
+                <span>End Call</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </Modal>

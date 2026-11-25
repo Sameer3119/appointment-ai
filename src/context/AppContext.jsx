@@ -1,23 +1,20 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import {
   CURRENT_PATIENT,
-  INITIAL_DOCTORS,
-  INITIAL_PATIENT_APPOINTMENTS,
   INITIAL_PATIENT_NOTIFICATIONS,
 } from "../services/mockData";
+import { doctorsApi, appointmentsApi, healthApi } from "../services/api";
 
 const AppContext = createContext(null);
 
 const STORAGE_KEYS = {
-  PATIENT_APPOINTMENTS: "medivoice_patient_appointments_v2",
   PATIENT_PROFILE: "medivoice_patient_profile_v2",
-  DOCTORS: "medivoice_doctors_v2",
   SIDEBAR_COLLAPSED: "medivoice_sidebar_collapsed",
   RECENTLY_VIEWED: "medivoice_recently_viewed_doctors",
 };
 
 export function AppProvider({ children }) {
-  // 1. Patient Profile State
+  // 1. Patient Profile State (persistent in localStorage so phone/name edits survive refresh)
   const [patient, setPatient] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.PATIENT_PROFILE);
@@ -27,33 +24,23 @@ export function AppProvider({ children }) {
     }
   });
 
-  // 2. Doctors State
-  const [doctors, setDoctors] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.DOCTORS);
-      return saved ? JSON.parse(saved) : INITIAL_DOCTORS;
-    } catch {
-      return INITIAL_DOCTORS;
-    }
-  });
+  // 2. Doctors State (persisted in SQLite backend)
+  const [doctors, setDoctors] = useState([]);
+  const [loadingDoctors, setLoadingDoctors] = useState(true);
+  const [doctorsError, setDoctorsError] = useState(null);
 
-  // 3. Patient Appointments State
-  const [appointments, setAppointments] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.PATIENT_APPOINTMENTS);
-      return saved ? JSON.parse(saved) : INITIAL_PATIENT_APPOINTMENTS;
-    } catch {
-      return INITIAL_PATIENT_APPOINTMENTS;
-    }
-  });
+  // 3. Patient Appointments State (persisted in SQLite backend)
+  const [appointments, setAppointments] = useState([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(true);
+  const [appointmentsError, setAppointmentsError] = useState(null);
 
   // 4. Recently viewed doctors
   const [recentlyViewedIds, setRecentlyViewedIds] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.RECENTLY_VIEWED);
-      return saved ? JSON.parse(saved) : ["doc-1", "doc-2", "doc-5"];
+      return saved ? JSON.parse(saved) : [1, 2, 5];
     } catch {
-      return ["doc-1", "doc-2", "doc-5"];
+      return [1, 2, 5];
     }
   });
 
@@ -86,14 +73,25 @@ export function AppProvider({ children }) {
   // 11. Toast Notifications State
   const [toasts, setToasts] = useState([]);
 
-  // Persist appointments changes
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.PATIENT_APPOINTMENTS, JSON.stringify(appointments));
-    } catch (err) {
-      console.error("Failed to save patient appointments:", err);
+  // 12. Backend connectivity state
+  const [backendConnected, setBackendConnected] = useState(true);
+
+  // Toast Helper
+  const addToast = useCallback(({ title, message, type = "success", duration = 4000 }) => {
+    const id = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    setToasts((prev) => [...prev, { id, title, message, type }]);
+
+    if (duration > 0) {
+      setTimeout(() => {
+        removeToast(id);
+      }, duration);
     }
-  }, [appointments]);
+    return id;
+  }, []);
+
+  const removeToast = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   // Persist patient profile changes
   useEffect(() => {
@@ -122,101 +120,147 @@ export function AppProvider({ children }) {
     }
   }, [sidebarCollapsed]);
 
-  // Toast Helper
-  const addToast = ({ title, message, type = "success", duration = 4000 }) => {
-    const id = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    setToasts((prev) => [...prev, { id, title, message, type }]);
-
-    if (duration > 0) {
-      setTimeout(() => {
-        removeToast(id);
-      }, duration);
+  // -------------------------------------------------------------------------
+  // Fetch Doctors from SQLite Backend
+  // -------------------------------------------------------------------------
+  const fetchDoctors = useCallback(async ({ specialty } = {}) => {
+    setLoadingDoctors(true);
+    setDoctorsError(null);
+    try {
+      const data = await doctorsApi.getAll({ specialty });
+      setDoctors(data);
+      setBackendConnected(true);
+      return data;
+    } catch (err) {
+      console.error("[MediVoice API] Failed to fetch doctors from backend:", err);
+      setDoctorsError(err.message || "Unable to load doctors from backend server.");
+      setBackendConnected(false);
+      return [];
+    } finally {
+      setLoadingDoctors(false);
     }
-    return id;
-  };
+  }, []);
 
-  const removeToast = (id) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  // Add Appointment (from Voice AI or Doctor Slot Picker)
-  const addAppointment = (appointmentInput) => {
-    const id = `apt-${Date.now().toString().slice(-4)}`;
-    const newAppointment = {
-      id,
-      patientName: patient.name,
-      patientPhone: appointmentInput.patientPhone || patient.phone,
-      patientEmail: patient.email,
-      doctorId: appointmentInput.doctorId || "doc-1",
-      doctorName: appointmentInput.doctorName || "Dr. Rajesh Sharma",
-      doctorAvatar: appointmentInput.doctorAvatar || "https://images.unsplash.com/photo-1622253692010-333f2da6031d?q=80&w=300&auto=format&fit=crop",
-      speciality: appointmentInput.speciality || "Cardiology",
-      appointmentDate: appointmentInput.appointmentDate || "2026-11-26",
-      appointmentTime: appointmentInput.appointmentTime || "10:00 AM",
-      status: "Confirmed",
-      bookedVia: appointmentInput.bookedVia || "Talk to MediVoice AI",
-      consultationFee: appointmentInput.consultationFee || 120,
-      paymentStatus: "Pay at Clinic",
-      room: "Suite 402, Consultation Wing",
-      reason: appointmentInput.reason || "Scheduled via MediVoice AI Assistant",
-      createdAt: new Date().toISOString(),
-      isNewlyCreated: true,
-    };
-
-    setAppointments((prev) => [newAppointment, ...prev]);
-    setNewlyBookedId(id);
-
-    // Track recently viewed doctor
-    if (appointmentInput.doctorId) {
-      trackRecentlyViewed(appointmentInput.doctorId);
+  // -------------------------------------------------------------------------
+  // Fetch Patient Appointments from SQLite Backend by Phone Number
+  // -------------------------------------------------------------------------
+  const fetchAppointments = useCallback(async (phoneOverride) => {
+    const targetPhone = phoneOverride || patient.phone;
+    if (!targetPhone) {
+      setAppointments([]);
+      setLoadingAppointments(false);
+      return [];
     }
 
-    // Add in-app notification
-    setNotifications((prev) => [
-      {
-        id: `notif-${Date.now()}`,
-        title: "Appointment Confirmed",
-        message: `Your booking with ${newAppointment.doctorName} for ${newAppointment.appointmentDate} at ${newAppointment.appointmentTime} is confirmed.`,
-        time: "Just now",
-        unread: true,
-      },
-      ...prev,
-    ]);
+    setLoadingAppointments(true);
+    setAppointmentsError(null);
+    try {
+      const data = await appointmentsApi.getByPhone(targetPhone);
+      setAppointments(data);
+      setBackendConnected(true);
+      return data;
+    } catch (err) {
+      console.error("[MediVoice API] Failed to fetch appointments from backend:", err);
+      setAppointmentsError(err.message || "Unable to load appointments from backend server.");
+      setBackendConnected(false);
+      return [];
+    } finally {
+      setLoadingAppointments(false);
+    }
+  }, [patient.phone]);
 
-    // Show Toast
-    addToast({
-      title: "Appointment Successfully Booked!",
-      message: `${newAppointment.doctorName} • ${newAppointment.appointmentDate} at ${newAppointment.appointmentTime}`,
-      type: "success",
-    });
+  // Initial Data Load on Mount
+  useEffect(() => {
+    fetchDoctors();
+  }, [fetchDoctors]);
 
-    // Trigger confirmation card modal
-    setConfirmationData(newAppointment);
+  // Reload appointments whenever patient phone changes
+  useEffect(() => {
+    if (patient.phone) {
+      fetchAppointments(patient.phone);
+    }
+  }, [patient.phone, fetchAppointments]);
 
-    return newAppointment;
+  // -------------------------------------------------------------------------
+  // Book Appointment via Backend POST /appointments
+  // -------------------------------------------------------------------------
+  const addAppointment = async (appointmentInput) => {
+    try {
+      const payload = {
+        doctorId: appointmentInput.doctorId || appointmentInput.doctor_id,
+        appointmentDate: appointmentInput.appointmentDate || appointmentInput.date,
+        appointmentTime: appointmentInput.appointmentTime || appointmentInput.time,
+        patientPhone: appointmentInput.patientPhone || patient.phone,
+        patientName: appointmentInput.patientName || patient.name,
+        patientEmail: appointmentInput.patientEmail || patient.email || null,
+        reason: appointmentInput.reason || `Consultation with ${appointmentInput.doctorName || "Doctor"}`,
+        notes: appointmentInput.notes || null,
+      };
+
+      // Call backend API
+      const createdApt = await appointmentsApi.create(payload);
+
+      // Track newly booked ID
+      setNewlyBookedId(createdApt.id);
+
+      // Track recently viewed doctor
+      if (payload.doctorId) {
+        trackRecentlyViewed(payload.doctorId);
+      }
+
+      // Add in-app notification
+      setNotifications((prev) => [
+        {
+          id: `notif-${Date.now()}`,
+          title: "Appointment Confirmed",
+          message: `Your booking with ${createdApt.doctorName} for ${createdApt.appointmentDate} at ${createdApt.appointmentTime} is confirmed.`,
+          time: "Just now",
+          unread: true,
+        },
+        ...prev,
+      ]);
+
+      // Show Toast
+      addToast({
+        title: "Appointment Successfully Booked!",
+        message: `${createdApt.doctorName} • ${createdApt.appointmentDate} at ${createdApt.appointmentTime}`,
+        type: "success",
+      });
+
+      // Refresh appointments from backend
+      await fetchAppointments(patient.phone);
+
+      // Trigger confirmation modal
+      setConfirmationData(createdApt);
+
+      return createdApt;
+    } catch (err) {
+      console.error("[MediVoice API] Error creating appointment:", err);
+      addToast({
+        title: "Booking Failed",
+        message: err.message || "Failed to create appointment with backend.",
+        type: "error",
+      });
+      throw err;
+    }
   };
 
-  // Cancel Appointment
-  const cancelAppointment = (appointmentId, reason = "Patient requested change") => {
-    let cancelledApt = null;
+  // -------------------------------------------------------------------------
+  // Cancel Appointment via Backend PATCH /appointments/{id}/cancel
+  // -------------------------------------------------------------------------
+  const cancelAppointment = async (appointmentId, reason = "Patient requested change") => {
+    try {
+      const updatedApt = await appointmentsApi.cancel(appointmentId);
 
-    setAppointments((prev) =>
-      prev.map((apt) => {
-        if (apt.id === appointmentId) {
-          cancelledApt = { ...apt, status: "Cancelled", cancellationReason: reason };
-          return cancelledApt;
-        }
-        return apt;
-      })
-    );
+      // Refresh appointments list from backend
+      await fetchAppointments(patient.phone);
 
-    if (cancelledApt) {
       // Add cancellation notification
       setNotifications((prev) => [
         {
           id: `notif-${Date.now()}`,
           title: "Appointment Cancelled",
-          message: `Your appointment with ${cancelledApt.doctorName} has been cancelled.`,
+          message: `Your appointment with ${updatedApt.doctorName} has been cancelled.`,
           time: "Just now",
           unread: true,
         },
@@ -225,20 +269,31 @@ export function AppProvider({ children }) {
 
       addToast({
         title: "Appointment Cancelled",
-        message: `Your booking with ${cancelledApt.doctorName} has been cancelled.`,
+        message: `Your booking with ${updatedApt.doctorName} for ${updatedApt.appointmentDate} has been cancelled.`,
         type: "info",
       });
+
+      return updatedApt;
+    } catch (err) {
+      console.error("[MediVoice API] Error cancelling appointment:", err);
+      addToast({
+        title: "Cancellation Failed",
+        message: err.message || "Failed to cancel appointment on backend.",
+        type: "error",
+      });
+      throw err;
     }
   };
 
-  // Cancel by Doctor Name (for simulated voice assistant cancellation flow)
-  const cancelAppointmentByDoctor = (doctorName) => {
+  // Cancel by Doctor Name (for simulated voice assistant demo)
+  const cancelAppointmentByDoctor = async (doctorName) => {
     const target = appointments.find(
-      (a) => a.status === "Confirmed" && a.doctorName.toLowerCase().includes(doctorName.toLowerCase())
+      (a) =>
+        (a.status.toLowerCase() === "confirmed" || a.status.toLowerCase() === "scheduled") &&
+        a.doctorName.toLowerCase().includes(doctorName.toLowerCase())
     );
     if (target) {
-      cancelAppointment(target.id, "Cancelled via MediVoice AI voice assistant");
-      return target;
+      return await cancelAppointment(target.id, "Cancelled via MediVoice AI voice assistant");
     }
     return null;
   };
@@ -253,28 +308,35 @@ export function AppProvider({ children }) {
 
   // Update Patient Profile
   const updatePatientProfile = (updates) => {
-    setPatient((prev) => ({ ...prev, ...updates }));
+    setPatient((prev) => {
+      const updated = { ...prev, ...updates };
+      return updated;
+    });
+
     addToast({
       title: "Profile Updated",
       message: "Your patient details have been saved.",
       type: "success",
     });
+
+    // If phone number was changed, immediately fetch appointments for the new phone
+    if (updates.phone && updates.phone !== patient.phone) {
+      fetchAppointments(updates.phone);
+    }
   };
 
-  // Reset to default sample mock data
+  // Reset to default sample patient profile
   const resetToSampleData = () => {
-    setAppointments(INITIAL_PATIENT_APPOINTMENTS);
-    setDoctors(INITIAL_DOCTORS);
     setPatient(CURRENT_PATIENT);
-    setRecentlyViewedIds(["doc-1", "doc-2", "doc-5"]);
+    setRecentlyViewedIds([1, 2, 5]);
     setNewlyBookedId(null);
-    localStorage.removeItem(STORAGE_KEYS.PATIENT_APPOINTMENTS);
     localStorage.removeItem(STORAGE_KEYS.PATIENT_PROFILE);
-    localStorage.removeItem(STORAGE_KEYS.DOCTORS);
     localStorage.removeItem(STORAGE_KEYS.RECENTLY_VIEWED);
+    fetchAppointments(CURRENT_PATIENT.phone);
+    fetchDoctors();
     addToast({
       title: "Data Reset",
-      message: "Restored initial patient demo dataset.",
+      message: "Restored initial patient demo profile.",
       type: "info",
     });
   };
@@ -286,14 +348,20 @@ export function AppProvider({ children }) {
   };
 
   // Derived appointment categories for patient view
-  const upcomingAppointments = appointments.filter((a) => a.status === "Confirmed");
-  const completedAppointments = appointments.filter((a) => a.status === "Completed");
-  const cancelledAppointments = appointments.filter((a) => a.status === "Cancelled");
+  const upcomingAppointments = appointments.filter(
+    (a) => a.status.toLowerCase() === "confirmed" || a.status.toLowerCase() === "scheduled"
+  );
+  const completedAppointments = appointments.filter(
+    (a) => a.status.toLowerCase() === "completed"
+  );
+  const cancelledAppointments = appointments.filter(
+    (a) => a.status.toLowerCase() === "cancelled"
+  );
   const nextUpcomingAppointment = upcomingAppointments[0] || null;
 
   // Recently viewed doctors objects
   const recentlyViewedDoctors = recentlyViewedIds
-    .map((id) => doctors.find((d) => d.id === id))
+    .map((id) => doctors.find((d) => d.id === id || String(d.id) === String(id)))
     .filter(Boolean);
 
   const value = {
@@ -301,7 +369,13 @@ export function AppProvider({ children }) {
     updatePatientProfile,
     doctors,
     setDoctors,
+    loadingDoctors,
+    doctorsError,
+    fetchDoctors,
     appointments,
+    loadingAppointments,
+    appointmentsError,
+    fetchAppointments,
     upcomingAppointments,
     completedAppointments,
     cancelledAppointments,
@@ -335,6 +409,7 @@ export function AppProvider({ children }) {
     cancelAppointment,
     cancelAppointmentByDoctor,
     resetToSampleData,
+    backendConnected,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
