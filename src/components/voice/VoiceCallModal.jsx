@@ -170,6 +170,31 @@ export function VoiceCallModal() {
         iceServers,
       });
 
+      // Configure DailyMediaManager audio constraints before connect/startCamera
+      // while preserving any existing deviceId selection and mic-switching behavior.
+      const dailyCall = transport.mediaManager?._daily;
+      if (dailyCall?.updateInputSettings) {
+        try {
+          const existingInput = (await dailyCall.getInputSettings?.()) ?? {};
+          const existingAudioSettings = existingInput?.audio?.settings ?? {};
+          await dailyCall.updateInputSettings({
+            audio: {
+              settings: {
+                ...existingAudioSettings,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: false,
+              },
+            },
+          });
+        } catch (constraintsErr) {
+          console.warn(
+            "[MediVoice WebRTC] Failed to apply audio input constraints:",
+            constraintsErr
+          );
+        }
+      }
+
       const client = new PipecatClient({
         transport,
         enableMic: true,
