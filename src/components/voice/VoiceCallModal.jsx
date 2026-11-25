@@ -16,7 +16,7 @@ import { Modal } from "../common/Modal";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { LiveTranscript } from "./LiveTranscript";
 import { useApp } from "../../context/AppContext";
-import { API_BASE_URL } from "../../services/api";
+import { API_BASE_URL, voiceApi } from "../../services/api";
 
 export function VoiceCallModal() {
   const {
@@ -89,8 +89,18 @@ export function VoiceCallModal() {
     currentBotMsgIdRef.current = null;
 
     try {
+      let iceServers;
+      try {
+        const iceConfig = await voiceApi.getIceConfig();
+        iceServers = iceConfig.iceServers;
+      } catch (iceErr) {
+        throw new Error(
+          `Unable to load voice ICE configuration: ${iceErr?.message || "Server error"}`
+        );
+      }
+
       const transport = new SmallWebRTCTransport({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers,
       });
 
       const client = new PipecatClient({

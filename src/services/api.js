@@ -366,3 +366,26 @@ export const healthApi = {
     return await request("/health");
   },
 };
+
+// ---------------------------------------------------------------------------
+// 4. VOICE / WEBRTC SERVICE
+// ---------------------------------------------------------------------------
+export const voiceApi = {
+  /**
+   * Fetch WebRTC ICE server configuration (including Metered TURN credentials)
+   * Backend endpoint: GET /api/v1/voice/ice-config
+   */
+  async getIceConfig() {
+    const data = await request("/voice/ice-config");
+    const iceServers = Array.isArray(data) ? data : data?.iceServers;
+
+    if (!Array.isArray(iceServers) || iceServers.length === 0) {
+      throw new Error("Voice ICE configuration returned no ICE servers.");
+    }
+
+    return {
+      ...(data && !Array.isArray(data) ? data : {}),
+      iceServers,
+    };
+  },
+};
