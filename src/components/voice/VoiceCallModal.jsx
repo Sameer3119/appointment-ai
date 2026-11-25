@@ -32,6 +32,7 @@ export function VoiceCallModal() {
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);
+  const [isAudioBlocked, setIsAudioBlocked] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
 
   // Real transcripts from Pipecat events
@@ -40,20 +41,82 @@ export function VoiceCallModal() {
 
   const clientRef = useRef(null);
   const audioRef = useRef(null);
+  const audioContextRef = useRef(null);
   const timerRef = useRef(null);
   const isConnectingRef = useRef(false);
   const currentBotMsgIdRef = useRef(null);
+
+  const unlockAudioOnGesture = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.muted = false;
+      audioRef.current.volume = 1.0;
+    }
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+
+    try {
+      if (!audioContextRef.current || audioContextRef.current.state === "closed") {
+        audioContextRef.current = new AudioCtx();
+      }
+      const ctx = audioContextRef.current;
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+    } catch (err) {
+      console.warn("[MediVoice WebRTC] AudioContext unlock warning:", err);
+    }
+  }, []);
+
+  const attemptAudioPlayback = useCallback(async () => {
+    const audioEl = audioRef.current;
+    if (!audioEl || !audioEl.srcObject) return;
+
+    audioEl.muted = false;
+    audioEl.volume = 1.0;
+
+    if (audioContextRef.current?.state === "suspended") {
+      audioContextRef.current.resume().catch(() => {});
+    }
+
+    try {
+      await audioEl.play();
+      setIsAudioBlocked(false);
+    } catch (playErr) {
+      if (playErr?.name === "NotAllowedError") {
+        console.warn("[MediVoice WebRTC] Audio autoplay blocked (NotAllowedError):", playErr);
+      } else {
+        console.warn("[MediVoice WebRTC] Audio playback failed:", playErr);
+      }
+      setIsAudioBlocked(true);
+    }
+  }, []);
 
   const cleanupCallResources = useCallback(async () => {
     clearInterval(timerRef.current);
     timerRef.current = null;
     isConnectingRef.current = false;
     setIsBotSpeaking(false);
+    setIsAudioBlocked(false);
     setInterimUserText("");
     currentBotMsgIdRef.current = null;
 
     if (audioRef.current) {
+      audioRef.current.pause();
       audioRef.current.srcObject = null;
+    }
+
+    if (audioContextRef.current) {
+      const ctx = audioContextRef.current;
+      audioContextRef.current = null;
+      if (ctx.state !== "closed") {
+        ctx.close().catch(() => {});
+      }
     }
 
     const client = clientRef.current;
@@ -86,7 +149,11 @@ export function VoiceCallModal() {
     setInterimUserText("");
     setIsMuted(false);
     setIsBotSpeaking(false);
+    setIsAudioBlocked(false);
     currentBotMsgIdRef.current = null;
+
+    // Unlock browser audio output synchronously inside the Start Call user gesture
+    unlockAudioOnGesture();
 
     try {
       let iceServers;
@@ -170,16 +237,33 @@ export function VoiceCallModal() {
           },
           onTrackStarted: (track, participant) => {
             if (track?.kind === "audio" && !participant?.local && audioRef.current) {
-              const stream = new MediaStream([track]);
-              audioRef.current.srcObject = stream;
-              audioRef.current.play().catch((playErr) => {
-                console.warn("[MediVoice WebRTC] Audio autoplay blocked:", playErr);
-              });
+              const currentStream = audioRef.current.srcObject;
+              const alreadyAttached =
+                currentStream instanceof MediaStream &&
+                currentStream.getAudioTracks().some((t) => t.id === track.id);
+
+              if (!alreadyAttached) {
+                audioRef.current.srcObject = new MediaStream([track]);
+              }
+              attemptAudioPlayback();
             }
           },
           onTrackStopped: (track, participant) => {
-            if (track?.kind === "audio" && !participant?.local && audioRef.current) {
-              audioRef.current.srcObject = null;
+            // SmallWebRTCTransport invokes onTrackStopped on both transient 'mute' and 'ended'.
+            // Only clear srcObject when the track has actually ended.
+            if (
+              track?.kind === "audio" &&
+              !participant?.local &&
+              track.readyState === "ended" &&
+              audioRef.current
+            ) {
+              const currentStream = audioRef.current.srcObject;
+              const isSameTrack =
+                currentStream instanceof MediaStream &&
+                currentStream.getAudioTracks().some((t) => t.id === track.id);
+              if (isSameTrack) {
+                audioRef.current.srcObject = null;
+              }
             }
           },
           onError: (errMsg) => {
@@ -220,7 +304,7 @@ export function VoiceCallModal() {
         type: "error",
       });
     }
-  }, [addToast, cleanupCallResources, refreshClinicData]);
+  }, [addToast, attemptAudioPlayback, cleanupCallResources, refreshClinicData, unlockAudioOnGesture]);
 
   const endCall = useCallback(async () => {
     await cleanupCallResources();
@@ -369,6 +453,23 @@ export function VoiceCallModal() {
           <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-start gap-2.5 text-xs text-rose-900">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
             <div className="leading-relaxed">{errorMessage}</div>
+          </div>
+        )}
+
+        {/* Audio Autoplay Blocked Banner */}
+        {isAudioBlocked && callStatus === "connected" && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between gap-3 text-xs text-amber-950">
+            <div className="flex items-center gap-2">
+              <Volume2 className="w-4 h-4 text-amber-700 shrink-0" />
+              <span>Browser blocked automatic audio playback. Click to hear MediVoice AI.</span>
+            </div>
+            <button
+              type="button"
+              onClick={attemptAudioPlayback}
+              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shrink-0 transition-colors cursor-pointer"
+            >
+              Enable Audio
+            </button>
           </div>
         )}
 
